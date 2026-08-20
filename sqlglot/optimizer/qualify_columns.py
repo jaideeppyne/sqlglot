@@ -941,30 +941,42 @@ def _expand_struct_stars_with_parens(expression: exp.Dot) -> list[exp.Alias]:
     return new_selections
 
 
-def _is_outer_star_reference(scope: Scope, table: str, resolver: Resolver) -> bool:
-    outer_scope = scope
-    allow_unknown = (
-        isinstance(scope.expression, exp.Select) and scope.expression.args.get("kind") == "STRUCT"
-    )
+def _is_outer_star_reference(
+    scope: Scope,
+    table: str,
+    resolver: Resolver,
+    allow_unknown: bool,
+) -> bool:
+    if not (
+        scope.can_be_correlated
+        and scope.is_subquery
+        and isinstance(scope.expression, exp.Select)
+        and scope.expression.args.get("kind") == "STRUCT"
+    ):
+        return False
 
-    while outer_scope.can_be_correlated and (outer_scope.is_subquery or outer_scope.is_union):
-        parent = outer_scope.expression.parent
-        ancestor = parent.find_ancestor(exp.Join, exp.Select) if parent else None
-        join_context = ancestor if isinstance(ancestor, exp.Join) else None
-        outer_scope = t.cast(Scope, outer_scope.parent)
-        outer_resolver = Resolver(outer_scope, resolver.schema, infer_schema=False)
-        visible_join = (
-            join_context
-            if join_context and join_context.find_ancestor(exp.Select) is outer_scope.expression
-            else None
-        )
+    parent = scope.expression.parent
+    ancestor = parent.find_ancestor(exp.Join, exp.Select) if parent else None
+    outer_scope = scope.parent
+    if not outer_scope or isinstance(ancestor, exp.Join) or ancestor is not outer_scope.expression:
+        return False
 
-        if outer_resolver.get_source_name_for_star(
-            table, visible_join, allow_unknown=allow_unknown
-        ):
-            return True
+    if table in outer_scope.selected_sources:
+        return True
 
-    return False
+    if not allow_unknown:
+        return False
+
+    outer_resolver = Resolver(outer_scope, resolver.schema, infer_schema=False)
+    unknown_source_count = 0
+    for source in outer_scope.selected_sources:
+        columns = outer_resolver.get_source_columns(source)
+        if table in columns:
+            return False
+        if not columns or "*" in columns:
+            unknown_source_count += 1
+
+    return unknown_source_count == 1
 
 
 def _expand_stars(
@@ -1065,11 +1077,13 @@ def _expand_stars(
 
                 if source is None:
                     outer_table = table
+                    allow_unknown = False
                     if isinstance(expression, exp.Column):
                         outer_table = expression.catalog or expression.db or table
+                        allow_unknown = not expression.catalog and not expression.db
 
                     if dialect.SUPPORTS_CORRELATED_STAR and _is_outer_star_reference(
-                        scope, outer_table, resolver
+                        scope, outer_table, resolver, allow_unknown
                     ):
                         new_selections.append(expression)
                         preserve_expression = True

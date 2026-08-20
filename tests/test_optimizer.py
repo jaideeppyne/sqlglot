@@ -1259,11 +1259,31 @@ class TestOptimizer(unittest.TestCase):
             "FROM `my_table` AS `t` JOIN `other` AS `o` ON TRUE",
         )
 
-    def test_qualify_columns_rejects_invisible_correlated_stars(self):
+    def test_qualify_columns_rejects_unsupported_correlated_stars(self):
         cases = [
             ("SELECT (SELECT z.*) FROM x", {}),
             ("SELECT (SELECT AS STRUCT a.*) FROM x", {"x": {"a": "INT64"}}),
             ("SELECT (SELECT AS STRUCT payload.*) FROM x JOIN y ON TRUE", {}),
+            (
+                "SELECT (SELECT AS STRUCT payload.*) FROM unknown AS x JOIN known AS y ON TRUE",
+                {"known": {"payload": "STRUCT<a INT64>"}},
+            ),
+            (
+                "SELECT 1 FROM x JOIN y ON (SELECT AS STRUCT x.* EXCEPT (a)) IS NOT NULL",
+                {"x": {"a": "INT64", "b": "INT64"}, "y": {"c": "INT64"}},
+            ),
+            (
+                "SELECT (SELECT AS STRUCT (SELECT AS STRUCT x.* EXCEPT (a))) FROM x",
+                {"x": {"a": "INT64", "b": "INT64"}},
+            ),
+            (
+                "SELECT (SELECT AS STRUCT one.*) FROM structs",
+                {"structs": {"one": "STRUCT<a INT64>"}},
+            ),
+            (
+                "WITH t AS (SELECT STRUCT(1 AS a) AS s) SELECT (SELECT AS STRUCT s.*) FROM t",
+                {},
+            ),
             (
                 "WITH base AS (SELECT 1 AS a) SELECT (WITH q AS (SELECT t.*) "
                 "SELECT AS STRUCT * FROM q) AS s FROM base AS t",
